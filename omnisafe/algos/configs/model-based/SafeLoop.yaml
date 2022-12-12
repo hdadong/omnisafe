@@ -19,7 +19,7 @@ defaults:
   max_ep_len: 1000
   action_repeat: 5
   seed: 0
-  device: "cpu"
+  device: "cuda:0"
   cost_gamma: 1.0
 
   # Soft Actor-Critic
@@ -36,7 +36,7 @@ defaults:
   sac_config_evaluation_mode: None
 
   # log
-  log_freq: 15000
+  log_freq: 20000
   data_dir: "./runs"
 
   # Optional Configuration

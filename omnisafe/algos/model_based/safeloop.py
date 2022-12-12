@@ -74,10 +74,10 @@ class SafeLoop(PolicyGradientModelBased, Planner):  # pylint: disable=too-many-i
         self.v_optimizer = Adam(self.actor_critic.v.parameters(), lr=self.cfgs['sac_lr'])
         return self.actor_critic
 
-    def algorithm_specific_logs(self, timestep):
+    def algorithm_specific_logs(self, time_step):
         """Log algo parameter"""
-        super().algorithm_specific_logs(timestep)
-        if timestep >= self.cfgs['update_policy_start_timesteps']:
+        super().algorithm_specific_logs(time_step)
+        if time_step >= self.cfgs['update_policy_start_timesteps']:
             self.logger.log_tabular('Loss/Pi')
             self.logger.log_tabular('Loss/alpha')
             self.logger.log_tabular('Loss/Q-networks')
@@ -97,9 +97,9 @@ class SafeLoop(PolicyGradientModelBased, Planner):  # pylint: disable=too-many-i
             self.logger.log_tabular('Loss/DynamicsTrainLoss')
             self.logger.log_tabular('Loss/DynamicsValLoss')
 
-    def update_actor_critic(self, timestep):
+    def update_actor_critic(self, time_step):
         """update actor and critic"""
-        if timestep >= self.cfgs['update_policy_start_timesteps']:
+        if time_step >= self.cfgs['update_policy_start_timesteps']:
             for _ in range(self.cfgs['update_policy_iters']):
                 # Get one batch data from Off-policy buffer
                 data = self.off_replay_buffer.sample_batch()
@@ -236,9 +236,9 @@ class SafeLoop(PolicyGradientModelBased, Planner):  # pylint: disable=too-many-i
             }
         )
 
-    def select_action(self, timestep, state, env):
+    def select_action(self, time_step, state, env):
         """action selection"""
-        if timestep < self.cfgs['update_policy_start_timesteps']:
+        if time_step < self.cfgs['update_policy_start_timesteps']:
             action = self.env.action_space.sample()
         else:
             action = self.get_action(np.array(state), env=env)
@@ -248,7 +248,7 @@ class SafeLoop(PolicyGradientModelBased, Planner):  # pylint: disable=too-many-i
 
     def store_real_data(
         self,
-        timestep,
+        time_step,
         ep_len,
         state,
         action_info,

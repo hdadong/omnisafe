@@ -21,7 +21,7 @@ defaults:
   obs_clip: 1000
   cost_gamma: 1.0
   # Log
-  log_freq: 10000
+  log_freq: 20000
   data_dir: "./runs"
 
   # Actor-Critic
@@ -69,7 +69,7 @@ defaults:
     gamma: 0.99
     lam: 0.97
     lam_c: 0.97
-    adv_estimation_method: "gae2"
+    adv_estimation_method: "gae-rtg"
     standardized_reward: True
     standardized_cost: True
     reward_penalty: False

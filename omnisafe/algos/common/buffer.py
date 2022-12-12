@@ -79,7 +79,7 @@ class Buffer:
         self.use_reward_penalty = reward_penalty
         self.device = device
 
-        assert adv_estimation_method in ['gae', 'gae2', 'vtrace', 'plain']
+        assert adv_estimation_method in ['gae', 'gae-rtg', 'vtrace', 'plain']
 
     def calculate_adv_and_value_targets(self, vals, rews, lam=None):
         """Compute the estimated advantage"""
@@ -91,13 +91,12 @@ class Buffer:
             adv = discount_cumsum(deltas, self.gamma * lam)
             value_net_targets = adv + vals[:-1]
 
-        elif self.adv_estimation_method == 'gae2':
+        elif self.adv_estimation_method == 'gae-rtg':
             # GAE formula: A_t = \sum_{k=0}^{n-1} (lam*gamma)^k delta_{t+k}
             lam = self.lam if lam is None else lam
             deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
-            # print("deltas1",deltas)
             adv = discount_cumsum(deltas, self.gamma * lam)
-            # print("adv1",adv)
+            # compute rewards-to-go, to be targets for the value function update
             value_net_targets = discount_cumsum(rews, self.gamma)[:-1]
 
         elif self.adv_estimation_method == 'vtrace':
@@ -234,7 +233,8 @@ class Buffer:
         if self.use_standardized_cost:
             # also for cost advantages; only re-center but no rescale!
             cadv_mean, cadv_std = distributed_utils.mpi_statistics_scalar(self.cost_adv_buf)
-            self.cost_adv_buf = (self.cost_adv_buf - cadv_mean) / (cadv_std + 1.0e-8)
+            self.cost_adv_buf = self.cost_adv_buf - cadv_mean
+
         # TODO
         # self.obs_buf = self.actor_critic.obs_oms(self.obs_buf, clip=False) \
         #     if self.standardize_env_obs else self.obs_buf

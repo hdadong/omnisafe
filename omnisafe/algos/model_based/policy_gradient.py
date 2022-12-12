@@ -43,7 +43,6 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
         self.algo = algo
         self.device = torch.device(self.cfgs['device'])
         self.cost_gamma = self.cfgs['cost_gamma']
-
         # Set up logger and save configuration to disk
         # Get local parameters before logger instance to avoid unnecessary print
         self.params = locals()
@@ -105,6 +104,7 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
         ep_len, ep_ret, ep_cost = 0, 0, 0
         state = self.env.reset()
         time_step = 0
+        last_policy_update, last_dynamics_update, last_log = 0, 0, 0
         while time_step < self.cfgs['max_real_time_steps']:
             # select action
             action, action_info = self.select_action(time_step, state, self.env)
@@ -131,11 +131,18 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
                 info,
             )
 
-            if time_step % self.cfgs['update_dynamics_freq'] < self.cfgs['action_repeat']:
+            if (
+                time_step % self.cfgs['update_dynamics_freq'] < self.cfgs['action_repeat']
+                and time_step - last_dynamics_update >= self.cfgs['update_dynamics_freq']
+            ):
                 self.update_dynamics_model()
-
-            if time_step % self.cfgs['update_policy_freq'] < self.cfgs['action_repeat']:
+                last_dynamics_update = time_step
+            if (
+                time_step % self.cfgs['update_policy_freq'] < self.cfgs['action_repeat']
+                and time_step - last_policy_update >= self.cfgs['update_policy_freq']
+            ):
                 self.update_actor_critic(time_step)
+                last_policy_update = time_step
 
             state = next_state
             if terminated or truncated:
@@ -151,28 +158,31 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
                 self.algo_reset()
 
             # Evaluate episode
-            if (time_step) % self.cfgs['log_freq'] < self.cfgs['action_repeat']:
+            if (
+                time_step % self.cfgs['log_freq'] < self.cfgs['action_repeat']
+                and time_step - last_log >= self.cfgs['log_freq']
+            ):
                 self.log(time_step)
                 self.logger.torch_save(itr=time_step)
-
+                last_log = time_step
         # Close opened files to avoid number of open files overflow
         self.logger.close()
         return self.actor_critic
 
-    def log(self, timestep: int):
+    def log(self, time_step: int):
         """
         logging data
         """
-        self.logger.log_tabular('TotalEnvSteps', timestep)
+        self.logger.log_tabular('TotalEnvSteps3', time_step)
         self.logger.log_tabular('Metrics/EpRet')
         self.logger.log_tabular('Metrics/EpCosts')
         self.logger.log_tabular('Metrics/EpLen')
         # Some child classes may add information to logs
-        self.algorithm_specific_logs(timestep)
+        self.algorithm_specific_logs(time_step)
         self.logger.log_tabular('Time', int(time.time() - self.start_time))
         self.logger.dump_tabular()
 
-    def select_action(self, timestep, state, env):  # pylint: disable=unused-argument
+    def select_action(self, time_step, state, env):  # pylint: disable=unused-argument
         """
         Select action when interact with real environment.
 
@@ -205,7 +215,7 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
         self.cvf_optimizer = Adam(self.actor_critic.vc.parameters(), lr=self.cfgs['vf_lr'])
         return self.actor_critic
 
-    def algorithm_specific_logs(self, timestep):
+    def algorithm_specific_logs(self, time_step):
         """
         Use this method to collect log information.
         e.g. log lagrangian for lagrangian-base , log q, r, s, c for CPO, etc
@@ -222,7 +232,7 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
             No return
         """
 
-    def update_actor_critic(self, timestep):
+    def update_actor_critic(self, time_step):
         """
         update the actor critic
 
@@ -240,7 +250,7 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
 
     def store_real_data(
         self,
-        timestep,
+        time_step,
         ep_len,
         state,
         action_info,

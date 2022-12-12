@@ -22,7 +22,7 @@ from torch.nn.functional import softplus
 
 from omnisafe.algos import registry
 from omnisafe.algos.common.buffer import Buffer
-from omnisafe.algos.model_based.lagrange import Lagrange
+from omnisafe.algos.common.lagrange import Lagrange
 from omnisafe.algos.model_based.policy_gradient import PolicyGradientModelBased
 
 
@@ -49,9 +49,9 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
             device=self.device,
         )
 
-    def algorithm_specific_logs(self, timestep):
+    def algorithm_specific_logs(self, time_step):
         """log algo parameter"""
-        super().algorithm_specific_logs(timestep)
+        super().algorithm_specific_logs(time_step)
         self.logger.log_tabular('DynaMetrics/EpRet')
         self.logger.log_tabular('DynaMetrics/EpLen')
         self.logger.log_tabular('DynaMetrics/EpCost')
@@ -70,7 +70,7 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
         self.logger.log_tabular('Misc/StopIter')
         self.logger.log_tabular('PolicyRatio')
 
-    def update_actor_critic(self, timestep):  # pylint: disable=unused-argument
+    def update_actor_critic(self, time_step):  # pylint: disable=unused-argument
         """update actor critic"""
         megaiter = 0
         last_valid_rets = np.zeros(self.cfgs['dynamics_cfgs']['elite_size'])
@@ -298,7 +298,7 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
     # pylint: disable-next=too-many-arguments
     def store_real_data(
         self,
-        timestep,
+        time_step,
         ep_len,
         state,
         action_info,
@@ -316,7 +316,7 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
                 obs=state, act=action, rew=reward, cost=cost, next_obs=next_state, done=truncated
             )
         if (
-            timestep % self.cfgs['update_policy_freq'] <= self.cfgs['mixed_real_time_steps']
+            time_step % self.cfgs['update_policy_freq'] <= self.cfgs['mixed_real_time_steps']
             and self.buf.ptr < self.cfgs['mixed_real_time_steps']
         ):
             self.buf.store(
@@ -337,9 +337,9 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
 
             # reached max imaging horizon, mixed real timestep, real max timestep , or episode truncated.
             elif (
-                timestep % self.cfgs['horizon'] < self.cfgs['action_repeat']
+                time_step % self.cfgs['horizon'] < self.cfgs['action_repeat']
                 or self.buf.ptr == self.cfgs['mixed_real_time_steps']
-                or timestep >= self.cfgs['max_real_time_steps']
+                or time_step >= self.cfgs['max_real_time_steps']
                 or truncated
             ):
                 state_tensor = torch.as_tensor(

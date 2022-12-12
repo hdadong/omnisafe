@@ -15,8 +15,10 @@
 
 import argparse
 import time
-
+import torch
 import omnisafe
+
+
 
 
 if __name__ == '__main__':
@@ -24,7 +26,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--algo',
         type=str,
-        default='SafeLoop',
+        default='MBPPOLag',
         help='Choose from: {MBPPOLag, SafeLoop',
     )
     parser.add_argument(
@@ -40,7 +42,7 @@ if __name__ == '__main__':
     args, unparsed_args = parser.parse_known_args()
 
     keys = [k[2:] for k in unparsed_args[0::2]]  # remove -- from argument
-    values = [eval(v) for v in unparsed_args[1::2]]
+    values = [v for v in unparsed_args[1::2]]
     unparsed_dict = {k: v for k, v in zip(keys, values)}
     env = omnisafe.EnvModelBased(args.algo, args.env_id)
     agent = omnisafe.Agent(args.algo, env, parallel=args.parallel, custom_cfgs=unparsed_dict)
