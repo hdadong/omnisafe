@@ -114,12 +114,12 @@ class Evaluator:
         else:
             self.obs_oms = lambda x: x
 
-    def evaluate(self, num_episodes: int = 10, horizon: int = 1000, cost_criteria: float = 1.0):
+    def evaluate(self, num_episodes: int = 10, horizon: int = 1000, cost_gamma: float = 1.0):
         """Evaluate the agent for num_episodes episodes.
         Args:
             num_episodes (int): number of episodes to evaluate the agent.
             horizon (int): maximum number of steps per episode.
-            cost_criteria (float): the cost criteria for the evaluation.
+            cost_gamma (float): the cost gamma for the evaluation.
         Returns:
             episode_rewards (list): list of episode rewards.
             episode_costs (list): list of episode costs.
@@ -145,7 +145,7 @@ class Evaluator:
                     )
                 obs, rew, cost, done, truncated, _ = self.env.step(act.numpy())
                 ep_ret += rew
-                ep_cost += (cost_criteria**step) * cost
+                ep_cost += (cost_gamma**step) * cost
 
                 if done or truncated:
                     episode_rewards.append(ep_ret)
@@ -238,7 +238,7 @@ if __name__ == '__main__':
         '/home/juntao/workspace/omnisafe_back/runs/Hopper-v4/PPO/seed-000-2022-11-18_23-20-39',
         'model.pt',
     )
-    evaluator.evaluate(num_episodes=100, horizon=1000, cost_criteria=1.0)
+    evaluator.evaluate(num_episodes=100, horizon=1000, cost_gamma=1.0)
     evaluator.render(
         num_episode=10,
         save_replay_path='/home/juntao/workspace/omnisafe_back/runs/Hopper-v4/PPO/seed-000-2022-11-18_23-20-39',

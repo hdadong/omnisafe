@@ -75,3 +75,4 @@ mujoco
 Tanh
 py
 sigmoid
+optimizers

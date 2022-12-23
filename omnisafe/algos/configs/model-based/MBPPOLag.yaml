@@ -26,12 +26,26 @@ defaults:
 
   # Actor-Critic
   update_policy_freq: 10000
-  target_kl: 0.01
+  target_kl: 0.012
   pi_iters: 80
   critic_iters: 80
   pi_lr: 0.0003
   vf_lr: 0.001
   ac_hidden_sizes: [64, 64]
+
+  ## Configuration For Mode
+  model_cfgs:
+    shared_weights: False
+    weight_initialization_mode: "kaiming_uniform"
+    ac_kwargs:
+      pi:
+        hidden_sizes: [64, 64]
+        activation: tanh
+      val:
+        hidden_sizes: [64, 64]
+        activation: tanh
+
+
 
   # Virtual roll out
   horizon: 80
@@ -45,8 +59,6 @@ defaults:
 
   # Optional Configuration
   kl_early_stopping: True
-  cost_criteria: False
-  use_cost_critic: False
   reward_penalty: False
   scale_rewards: False
   standardized_obs: False

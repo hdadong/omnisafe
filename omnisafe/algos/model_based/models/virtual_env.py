@@ -26,7 +26,13 @@ class VirtualEnv:
         self.model = model
         self.env_name = env_name
         self.device = device
-
+        if self.model.env_type == 'gym' and self.algo in ['mbppo-lag']:
+            self.state_start_dim = 0
+        elif self.model.env_type == 'gym' and self.algo in ['cap', 'safe-loop']:
+            self.state_start_dim = 1
+        elif self.model.env_type == 'mujoco-speed' and self.algo in ['mbppo-lag', 'cap', 'safe-loop']:
+            self.state_start_dim = 2
+        
     def _termination_fn(self, env_name, obs, act, next_obs):
         """Terminal function"""
         if env_name == 'Hopper-v2':  # pylint: disable=no-else-return
@@ -95,8 +101,8 @@ class VirtualEnv:
 
         return log_prob, stds
 
-    def step(self, obs, act, deterministic=False):  # pylint:disable=too-many-locals
-        """Predict next state"""
+    def mbppo_step(self, obs, act, idx=None, deterministic=False):  # pylint:disable=too-many-locals
+        """use numpy input to predict single next state by randomly select one model result or select idx model result"""
         if len(obs.shape) == 1:
             obs = obs[None]
             act = act[None]
@@ -104,10 +110,14 @@ class VirtualEnv:
         else:
             return_single = False
 
+        if idx == None:
+            idx = self.model.elite_model_idxes
+        else:
+            idx = [idx]
         inputs = np.concatenate((obs, act), axis=-1)
         ensemble_model_means, ensemble_model_vars = self.model.predict(inputs)
-        if self.algo == 'safe-loop':
-            ensemble_model_means[:, :, 1:] += obs
+        ensemble_model_means[:, :, self.state_start_dim:] += obs
+
 
         ensemble_model_stds = np.sqrt(ensemble_model_vars)
 
@@ -120,85 +130,40 @@ class VirtualEnv:
             )
 
         _, batch_size, _ = ensemble_model_means.shape
-        model_idxes = np.random.choice(self.model.elite_model_idxes, size=batch_size)
+        model_idxes = np.random.choice(idx, size=batch_size)
         batch_idxes = np.arange(0, batch_size)
 
         samples = ensemble_samples[model_idxes, batch_idxes]
-        model_means = ensemble_model_means[model_idxes, batch_idxes]
-        model_stds = ensemble_model_stds[model_idxes, batch_idxes]
 
-        log_prob, dev = self._get_logprob(samples, ensemble_model_means, ensemble_model_vars)
+        if self.algo == 'mbppo-lag' and self.model.env_type == 'mujoco-speed':
+            rewards, cost, next_obs = samples[:, 0], samples[:, 1], samples[:, self.state_start_dim:]
+        elif self.algo == 'mbppo-lag' and self.model.env_type == 'gym':
+            next_obs = samples
 
-        if self.algo == 'safe-loop':
-            rewards, next_obs = samples[:, :1], samples[:, 1:]
-        elif self.algo == 'mbppo-lag':
-            next_obs_delta = samples
-            next_obs = next_obs_delta + obs
         terminals = self._termination_fn(self.env_name, obs, act, next_obs)
-        if self.algo == 'safe-loop':
-            batch_size = model_means.shape[0]
-            return_means = np.concatenate(
-                (model_means[:, :1], terminals, model_means[:, 1:]), axis=-1
-            )
-            return_stds = np.concatenate(
-                (model_stds[:, :1], np.zeros((batch_size, 1)), model_stds[:, 1:]), axis=-1
-            )
 
         if return_single:
             next_obs = next_obs[0]
-            if self.algo == 'safe-loop':
-                return_means = return_means[0]
-                return_stds = return_stds[0]
+            if self.model.env_type == 'mujoco-speed':
                 rewards = rewards[0]
+                cost = cost[0]
                 terminals = terminals[0]
-        if self.algo == 'safe-loop':
-            info = {'mean': return_means, 'std': return_stds, 'log_prob': log_prob, 'dev': dev}
-            return next_obs, rewards, terminals, info
-        return next_obs
+        if self.algo == 'mbppo-lag' and self.model.env_type == 'mujoco-speed':
+            return next_obs, rewards, cost, terminals
+        elif self.algo == 'mbppo-lag' and self.model.env_type == 'gym':
+            return next_obs, None, None, None
 
-    def step_elite(self, obs, act, idx, deterministic=False):  # pylint:disable=too-many-locals
-        """Predict next state"""
-        if len(obs.shape) == 1:
-            obs = obs[None]
-            act = act[None]
-            return_single = True
-        else:
-            return_single = False
-
-        inputs = np.concatenate((obs, act), axis=-1)
-        ensemble_model_means, ensemble_model_vars = self.model.predict(inputs)
-        ensemble_model_stds = np.sqrt(ensemble_model_vars)
-
-        if deterministic:
-            ensemble_samples = ensemble_model_means
-        else:
-            ensemble_samples = (
-                ensemble_model_means
-                + np.random.normal(size=ensemble_model_means.shape) * ensemble_model_stds
-            )
-
-        _, batch_size, _ = ensemble_model_means.shape
-        model_idxes = np.random.choice([idx], size=batch_size)
-        batch_idxes = np.arange(0, batch_size)
-        samples = ensemble_samples[model_idxes, batch_idxes]
-        next_obs_delta = samples
-        next_obs = next_obs_delta + obs
-
-        if return_single:
-            next_obs = next_obs[0]
-
-        return next_obs
-
-    def get_forward_prediction_random_ensemble_t(self, obs, act, deterministic=False):
-        """Randomly predict next state"""
+    def get_forward_prediction_random_t(self, obs, act, deterministic=False, all_model=False, repeat_network=False):
+        """Use tensor input to predict single next state by randomly select elite model result for online planning"""
         if len(obs.shape) == 1:
             obs = obs[None]
             act = act[None]
 
         inputs = torch.cat((obs, act), dim=-1)
-        ensemble_model_means, ensemble_model_vars = self.model.predict_t(inputs)
+        ensemble_model_means, ensemble_model_vars = self.model.predict_t(inputs, repeat_network=repeat_network)
 
-        ensemble_model_means[:, :, 1:] += obs
+        ensemble_model_means[:, :, self.state_start_dim:] += obs
+
         ensemble_model_stds = torch.sqrt(ensemble_model_vars)
 
         if deterministic:
@@ -209,91 +174,17 @@ class VirtualEnv:
                 + torch.randn(size=ensemble_model_means.shape).to(self.device) * ensemble_model_stds
             )
 
-        _, batch_size, _ = ensemble_model_means.shape
-        model_idxes = np.random.choice(self.model.elite_model_idxes, size=batch_size)
-        batch_idxes = np.arange(0, batch_size)
-
-        samples = ensemble_samples[model_idxes, batch_idxes]
-
-        return samples
-
-    def get_forward_prediction_random_ensemble(self, obs, act, deterministic=False):
-        """Predict next state"""
-        if len(obs.shape) == 1:
-            obs = obs[None]
-            act = act[None]
-
-        if torch.is_tensor(obs):
-            obs = obs.detach().cpu().numpy()
-        if torch.is_tensor(act):
-            act = act.detach().cpu().numpy()
-        inputs = np.concatenate((obs, act), axis=-1)
-        ensemble_model_means, ensemble_model_vars = self.model.predict(inputs)
-
-        ensemble_model_means[:, :, 1:] += obs
-        ensemble_model_stds = np.sqrt(ensemble_model_vars)
-
-        if deterministic:
-            ensemble_samples = ensemble_model_means
+        # use all dynamics model result
+        if all_model == True:
+            samples = ensemble_samples
+            samples_var = ensemble_model_vars
+        # only use elite model result
         else:
-            ensemble_samples = (
-                ensemble_model_means
-                + np.random.normal(size=ensemble_model_means.shape) * ensemble_model_stds
-            )
+            _, batch_size, _ = ensemble_model_means.shape
+            model_idxes = np.random.choice(self.model.elite_model_idxes, size=batch_size)
+            batch_idxes = np.arange(0, batch_size)
+            samples = ensemble_samples[model_idxes, batch_idxes]
+            samples_var = ensemble_model_vars[model_idxes, batch_idxes]
 
-        _, batch_size, _ = ensemble_model_means.shape
-        model_idxes = np.random.choice(self.model.elite_model_idxes, size=batch_size)
-        batch_idxes = np.arange(0, batch_size)
+        return samples, samples_var
 
-        samples = ensemble_samples[model_idxes, batch_idxes]
-
-        return samples
-
-    def get_forward_prediction(self, obs, act, deterministic=False):
-        """Predict next state"""
-        if len(obs.shape) == 1:
-            obs = obs[None]
-            act = act[None]
-
-        if torch.is_tensor(obs):
-            obs = obs.detach().cpu().numpy()
-        if torch.is_tensor(act):
-            act = act.detach().cpu().numpy()
-
-        inputs = np.concatenate((obs, act), axis=-1)
-        ensemble_model_means, ensemble_model_vars = self.model.predict(inputs)
-
-        ensemble_model_means[:, :, 1:] += obs
-        ensemble_model_stds = np.sqrt(ensemble_model_vars)
-
-        if deterministic:
-            ensemble_samples = ensemble_model_means
-        else:
-            ensemble_samples = (
-                ensemble_model_means
-                + np.random.normal(size=ensemble_model_means.shape) * ensemble_model_stds
-            )
-
-        samples = ensemble_samples[self.model.elite_model_idxes, :]
-        return samples
-
-    def get_forward_prediction_t(self, obs, act, deterministic=False):
-        """Predict next state"""
-        if len(obs.shape) == 1:
-            obs = obs[None]
-            act = act[None]
-
-        inputs = torch.cat((obs, act), dim=-1)
-        ensemble_model_means, ensemble_model_vars = self.model.predict_batch_t(inputs)
-
-        ensemble_model_means[:, :, 1:] += obs
-        ensemble_model_stds = torch.sqrt(ensemble_model_vars)
-
-        if deterministic:
-            ensemble_samples = ensemble_model_means
-        else:
-            ensemble_samples = (
-                ensemble_model_means
-                + torch.randn(size=ensemble_model_means.shape).to(self.device) * ensemble_model_stds
-            )
-        return ensemble_samples

@@ -27,6 +27,8 @@ from omnisafe.algos.common.replay_buffer import ReplayBuffer as Off_ReplayBuffer
 from omnisafe.algos.model_based.models.actor_critic import MLPActorCritic
 from omnisafe.algos.model_based.models.dynamic_model import EnsembleDynamicsModel
 from omnisafe.algos.model_based.models.virtual_env import VirtualEnv
+from omnisafe.algos.models.constraint_actor_critic import ConstraintActorCritic
+from omnisafe.algos.utils import core
 from omnisafe.algos.utils.distributed_utils import proc_id
 
 
@@ -61,14 +63,14 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
         self.env.set_eplen(int(self.cfgs['max_ep_len']))
 
         # Initialize dynamics model
-        reward_size = 1 if self.algo == 'safe-loop' else 0
         self.dynamics = EnsembleDynamicsModel(
             algo,
+            self.env.env_type,
             self.device,
             state_size=self.env.dynamics_state_size,
             action_size=self.env.action_space.shape[0],
-            reward_size=reward_size,
-            cost_size=0,
+            reward_size=1,
+            cost_size=1,
             **self.cfgs['dynamics_cfgs'],
         )
         self.virtual_env = VirtualEnv(algo, self.dynamics, self.env_id, self.device)
@@ -85,20 +87,13 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
 
         # Initialize Actor-Critic
         self.actor_critic = self.set_algorithm_specific_actor_critic()
-
-        # Set up model saving
-        what_to_save = {
-            'pi': self.actor_critic.pi,
-        }
-        self.logger.setup_torch_saver(what_to_save=what_to_save)
-        self.logger.torch_save()
         # Setup statistics
         self.start_time = time.time()
         self.epoch_time = time.time()
 
         self.logger.log('Start with training.')
 
-    def learn(self):
+    def learn(self):# pylint: disable=too-many-locals
         """training the policy."""
         self.start_time = time.time()
         ep_len, ep_ret, ep_cost = 0, 0, 0
@@ -108,6 +103,7 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
         while time_step < self.cfgs['max_real_time_steps']:
             # select action
             action, action_info = self.select_action(time_step, state, self.env)
+
             next_state, reward, cost, terminated, truncated, info = self.env.step(
                 action, self.cfgs['action_repeat']
             )
@@ -116,7 +112,6 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
             ep_cost += (self.cost_gamma**ep_len) * cost
             ep_len += 1
             ep_ret += reward
-
             self.store_real_data(
                 time_step,
                 ep_len,
@@ -131,19 +126,6 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
                 info,
             )
 
-            if (
-                time_step % self.cfgs['update_dynamics_freq'] < self.cfgs['action_repeat']
-                and time_step - last_dynamics_update >= self.cfgs['update_dynamics_freq']
-            ):
-                self.update_dynamics_model()
-                last_dynamics_update = time_step
-            if (
-                time_step % self.cfgs['update_policy_freq'] < self.cfgs['action_repeat']
-                and time_step - last_policy_update >= self.cfgs['update_policy_freq']
-            ):
-                self.update_actor_critic(time_step)
-                last_policy_update = time_step
-
             state = next_state
             if terminated or truncated:
                 self.logger.store(
@@ -157,10 +139,26 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
                 state = self.env.reset()
                 self.algo_reset()
 
+            if (
+                time_step % self.cfgs['update_dynamics_freq'] < self.cfgs['action_repeat']
+                and time_step - last_dynamics_update >= self.cfgs['update_dynamics_freq']
+            ):
+                self.update_dynamics_model()
+                last_dynamics_update = time_step
+
+
+            if (
+                time_step % self.cfgs['update_policy_freq'] < self.cfgs['action_repeat']
+                and time_step - last_policy_update >= self.cfgs['update_policy_freq']
+            ):
+                self.update_actor_critic(time_step)
+                last_policy_update = time_step
+            
             # Evaluate episode
             if (
-                time_step % self.cfgs['log_freq'] < self.cfgs['action_repeat']
-                and time_step - last_log >= self.cfgs['log_freq']
+                (time_step % self.cfgs['log_freq'] < self.cfgs['action_repeat']
+                and time_step - last_log >= self.cfgs['log_freq'])
+                or time_step == self.cfgs['max_real_time_steps'] - 1
             ):
                 self.log(time_step)
                 self.logger.torch_save(itr=time_step)
@@ -205,14 +203,32 @@ class PolicyGradientModelBased:  # pylint: disable=too-many-instance-attributes,
         Returns:
             Actor_critic
         """
-        self.actor_critic = MLPActorCritic(
-            (self.env.ac_state_size,),
-            self.env.action_space,
-            **dict(hidden_sizes=self.cfgs['ac_hidden_sizes']),
+        self.actor_critic = ConstraintActorCritic(
+            observation_space=self.env.observation_space,
+            action_space=self.env.action_space,
+            scale_rewards=self.cfgs['scale_rewards'],
+            standardized_obs=self.cfgs['standardized_obs'],
+            **self.cfgs['model_cfgs'],
         ).to(self.device)
-        self.pi_optimizer = Adam(self.actor_critic.pi.parameters(), lr=self.cfgs['pi_lr'])
-        self.vf_optimizer = Adam(self.actor_critic.v.parameters(), lr=self.cfgs['vf_lr'])
-        self.cvf_optimizer = Adam(self.actor_critic.vc.parameters(), lr=self.cfgs['vf_lr'])
+        # Set up optimizers for policy and value function
+        self.pi_optimizer = core.get_optimizer(
+            'Adam', module=self.actor_critic.pi, learning_rate=self.cfgs['pi_lr']
+        )
+        self.vf_optimizer = core.get_optimizer(
+            'Adam', module=self.actor_critic.v, learning_rate=self.cfgs['vf_lr']
+        )
+        self.cf_optimizer = core.get_optimizer(
+            'Adam', module=self.actor_critic.c, learning_rate=self.cfgs['vf_lr']
+        )
+
+        # self.actor_critic = MLPActorCritic(
+        #     (self.env.ac_state_size,),
+        #     self.env.action_space,
+        #     **dict(hidden_sizes=self.cfgs['ac_hidden_sizes']),
+        # ).to(self.device)
+        # self.pi_optimizer = Adam(self.actor_critic.pi.parameters(), lr=self.cfgs['pi_lr'])
+        # self.vf_optimizer = Adam(self.actor_critic.v.parameters(), lr=self.cfgs['vf_lr'])
+        # self.cf_optimizer = Adam(self.actor_critic.c.parameters(), lr=self.cfgs['vf_lr'])
         return self.actor_critic
 
     def algorithm_specific_logs(self, time_step):

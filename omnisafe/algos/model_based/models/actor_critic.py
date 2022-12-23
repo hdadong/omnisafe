@@ -104,7 +104,7 @@ class MLPActorCritic(nn.Module):
 
         # build value function
         self.v = MLPCritic(obs_dim, hidden_sizes, activation)
-        self.vc = MLPCritic(obs_dim, hidden_sizes, activation)
+        self.c = MLPCritic(obs_dim, hidden_sizes, activation)
 
     def step(self, obs):
         with torch.no_grad():
@@ -113,7 +113,7 @@ class MLPActorCritic(nn.Module):
             # a = self.pi.mu_net(obs)
             logp_a = self.pi._log_prob_from_distribution(pi, a)
             v = self.v(obs)
-            vc = self.vc(obs)
+            vc = self.c(obs)
         return a.cpu().numpy(), v.cpu().numpy(), vc.cpu().numpy(), logp_a.cpu().numpy()
 
     def act(self, obs):
@@ -138,7 +138,6 @@ class SoftActorCritic(nn.Module):
         self.pi = SquashedGaussianMLPActor(obs_dim, act_dim, hidden_sizes, activation, act_limit)
         self.q1 = MLPQFunction(obs_dim, act_dim, hidden_sizes, activation)
         self.q2 = MLPQFunction(obs_dim, act_dim, hidden_sizes, activation)
-        self.v = MLPVFunction(obs_dim, act_dim, hidden_sizes, activation)
 
     def act_batch(self, obs, deterministic=False, with_logprob=False):
         with torch.no_grad():
@@ -204,17 +203,6 @@ class SquashedGaussianMLPActor(nn.Module):
         logp_pi = pi_distribution.log_prob(actions_u).sum(axis=-1)
         logp_pi -= (2 * (np.log(2) - actions_u - F.softplus(-2 * actions_u))).sum(axis=1)
         return logp_pi
-
-
-class MLPVFunction(nn.Module):
-    def __init__(self, obs_dim, act_dim, hidden_sizes, activation):
-        super().__init__()
-        self.v = mlp([obs_dim] + list(hidden_sizes) + [1], activation)
-
-    def forward(self, obs):
-        v = self.v(obs)
-        return torch.squeeze(v, -1)  # Critical to ensure q has right shape.
-
 
 class MLPQFunction(nn.Module):
     def __init__(self, obs_dim, act_dim, hidden_sizes, activation):

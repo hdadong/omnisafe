@@ -48,20 +48,28 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
             **self.cfgs['buffer_cfgs'],
             device=self.device,
         )
-
+        # Set up model saving
+        what_to_save = {
+            'pi': self.actor_critic.pi,
+            'dynamics': self.dynamics,
+        }
+        self.logger.setup_torch_saver(what_to_save=what_to_save)
+        self.logger.torch_save()
     def algorithm_specific_logs(self, time_step):
         """log algo parameter"""
         super().algorithm_specific_logs(time_step)
         self.logger.log_tabular('DynaMetrics/EpRet')
         self.logger.log_tabular('DynaMetrics/EpLen')
         self.logger.log_tabular('DynaMetrics/EpCost')
+        self.logger.log_tabular('Loss/DynamicsTrainMseLoss')
+        self.logger.log_tabular('Loss/DynamicsValMseLoss')
         self.logger.log_tabular('Loss/Pi', std=False)
         self.logger.log_tabular('Loss/Value')
         self.logger.log_tabular('Loss/DeltaPi')
         self.logger.log_tabular('Loss/DeltaValue')
         self.logger.log_tabular('Loss/CValue')
         self.logger.log_tabular('Loss/DeltaCValue')
-        self.logger.log_tabular('Penalty', softplus(self.lagrangian_multiplier))
+        self.logger.log_tabular('Penalty', self.lambda_range_projection(self.lagrangian_multiplier).item())
         self.logger.log_tabular('Values/Adv')
         self.logger.log_tabular('Values/Adv_C')
         self.logger.log_tabular('Megaiter')
@@ -80,36 +88,41 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
             if megaiter > 0:
                 old_params_pi = self.get_param_values(self.actor_critic.pi)
                 old_params_v = self.get_param_values(self.actor_critic.v)
-                old_params_vc = self.get_param_values(self.actor_critic.vc)
-                data = self.buf.get()
-                cur_cost = self.logger.get_stats('DynaMetrics/EpCost')[0]
-                self.update_lagrange_multiplier(cur_cost)
-                self.update_policy_net(data=data)
-                self.update_value_net(data=data)
+                old_params_vc = self.get_param_values(self.actor_critic.c)
+                self.update()
                 result, valid_rets = self.validation(last_valid_rets)
                 if result is True:
                     # backtrack
                     self.set_param_values(old_params_pi, self.actor_critic.pi)
                     self.set_param_values(old_params_v, self.actor_critic.v)
-                    self.set_param_values(old_params_vc, self.actor_critic.vc)
+                    self.set_param_values(old_params_vc, self.actor_critic.c)
                     megaiter += 1
                     break
                 megaiter += 1
                 last_valid_rets = valid_rets
             else:
                 megaiter += 1
-                data = self.buf.get()
-                cur_cost = self.logger.get_stats('DynaMetrics/EpCost')[0]
-                self.update_lagrange_multiplier(cur_cost)
-                self.update_policy_net(data=data)
-                self.update_value_net(data=data)
+                self.update()
+
         self.logger.store(Megaiter=megaiter)
+
+    def update(self):
+        """Get data from buffer and update Lagrange multiplier, actor, critic"""
+        data = self.buf.get()
+        # Note that logger already uses MPI statistics across all processes..
+        ep_costs = self.logger.get_stats('DynaMetrics/EpCost')[0]
+        # First update Lagrange multiplier parameter
+        self.update_lagrange_multiplier(ep_costs)
+        # now update policy and value network
+        self.update_policy_net(data=data)
+        self.update_value_net(data=data)
+
 
     def compute_loss_v(self, data):
         """compute the loss of value function"""
         obs, ret, cret = data['obs'], data['target_v'], data['target_c']
         return ((self.actor_critic.v(obs) - ret) ** 2).mean(), (
-            (self.actor_critic.vc(obs) - cret) ** 2
+            (self.actor_critic.c(obs) - cret) ** 2
         ).mean()
 
     def compute_loss_pi(self, data):
@@ -118,10 +131,13 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
         ratio = torch.exp(_log_p - data['log_p'])
         ratio_clip = torch.clamp(ratio, 1 - self.clip, 1 + self.clip)
         loss_pi = -(torch.min(ratio * data['adv'], ratio_clip * data['adv'])).mean()
-        penalty = softplus(self.lagrangian_multiplier)
-        penalty_item = penalty.item()
-        loss_pi += penalty_item * ((ratio * data['cost_adv']).mean())
-        loss_pi /= 1 + penalty_item
+
+        # ensure that Lagrange multiplier is positive
+        penalty = self.lambda_range_projection(self.lagrangian_multiplier).item()
+        loss_pi += penalty * ((ratio * data['cost_adv']).mean())
+        loss_pi /= 1 + penalty
+
+        # Useful extra info
         approx_kl = (data['log_p'] - _log_p).mean().item()
         ent = dist.entropy().mean().item()
         clipped = ratio.gt(1 + self.clip) | ratio.lt(1 - self.clip)
@@ -137,7 +153,13 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
         delta_state = next_state - state
         inputs = np.concatenate((state, action), axis=-1)
         labels = delta_state
-        self.virtual_env.model.train(inputs, labels, batch_size=256, holdout_ratio=0.2)
+        train_mse_losses, val_mse_losses = self.dynamics.train(inputs, labels, batch_size=256, holdout_ratio=0.2)
+        self.logger.store(
+            **{
+                'Loss/DynamicsTrainMseLoss': train_mse_losses,
+                'Loss/DynamicsValMseLoss': val_mse_losses,
+            }
+        )
 
     def update_policy_net(self, data):
         """update policy"""
@@ -149,7 +171,7 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
             loss_pi, pi_info = self.compute_loss_pi(data)
             kl_div = pi_info['kl']
             if self.cfgs.get('kl_early_stopping', False):
-                if kl_div > 1.2 * self.cfgs['target_kl']:
+                if kl_div > self.cfgs['target_kl']:
                     self.logger.log(f'Reached ES criterion after {i+1} steps.')
                     break
             self.pi_optimizer.zero_grad()
@@ -182,9 +204,9 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
             loss_v.backward()
             self.vf_optimizer.step()
 
-            self.cvf_optimizer.zero_grad()
+            self.cf_optimizer.zero_grad()
             loss_vc.backward()
-            self.cvf_optimizer.step()
+            self.cf_optimizer.step()
 
         self.logger.store(
             **{
@@ -224,11 +246,8 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
 
         for time_step in range(self.cfgs['imaging_steps_per_policy_update'] - mix_real):
             action, action_info = self.select_action(time_step, state, self.env_auxiliary)
-            next_state = self.virtual_env.step(state, action)
-            next_state = np.nan_to_num(next_state)
-            next_state = np.clip(next_state, -self.cfgs['obs_clip'], self.cfgs['obs_clip'])
-            reward, cost, goal_flag = self.env_auxiliary.get_reward_cost(next_state)
-
+            next_state, reward, cost, info = self.virtual_step(state, action)
+            
             dep_ret += reward
             dep_cost += (self.cost_gamma**dep_len) * cost
             dep_len += 1
@@ -247,8 +266,8 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
             timeout = dep_len == self.cfgs['horizon']
             truncated = timeout
             epoch_ended = time_step == self.cfgs['imaging_steps_per_policy_update'] - 1
-            if truncated or epoch_ended or goal_flag:
-                if timeout or epoch_ended or goal_flag:
+            if truncated or epoch_ended or info['goal_flag']:
+                if timeout or epoch_ended or info['goal_flag']:
                     state_tensor = torch.as_tensor(
                         action_info['state_vec'], device=self.device, dtype=torch.float32
                     )
@@ -280,13 +299,10 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
             state = self.env_auxiliary.reset()
             for step in range(self.cfgs['validation_horizon']):
                 action, _ = self.select_action(step, state, self.env_auxiliary)
-                next_state = self.virtual_env.step_elite(state, action, valid_id)
-                next_state = np.nan_to_num(next_state)
-                next_state = np.clip(next_state, -self.cfgs['obs_clip'], self.cfgs['obs_clip'])
-                reward, _, goal_flag = self.env_auxiliary.get_reward_cost(next_state)
+                next_state, reward, _, info = self.virtual_step(state, action, idx=valid_id)
                 valid_rets[valid_id] += reward
                 state = next_state
-                if goal_flag:
+                if info['goal_flag']:
                     state = self.env_auxiliary.reset()
             if valid_rets[valid_id] > last_valid_rets[valid_id]:
                 winner += 1
@@ -351,3 +367,21 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
 
     def algo_reset(self):
         """reset algo parameters"""
+
+    def virtual_step(self, state, action, idx=None):
+        """use virual environment to predict next state, reward, cost"""
+        if self.env.env_type == 'gym':
+            next_state, _, _, _ = self.virtual_env.mbppo_step(state, action, idx)
+            next_state = np.nan_to_num(next_state)
+            next_state = np.clip(next_state, -self.cfgs['obs_clip'], self.cfgs['obs_clip'])
+            reward, cost, goal_flag = self.env_auxiliary.get_reward_cost(next_state)
+            info = {'goal_flag':goal_flag}
+        elif self.env.env_type == 'mujoco-speed':
+            next_state, reward, cost, terminated = self.virtual_env.mbppo_step(state, action, idx)
+            next_state = np.nan_to_num(next_state)
+            reward = np.nan_to_num(reward)
+            cost = np.nan_to_num(cost)
+            next_state = np.clip(next_state, -self.cfgs['obs_clip'], self.cfgs['obs_clip'])
+            info = {'goal_flag':False}
+        return next_state, reward, cost, info
+    

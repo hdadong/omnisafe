@@ -96,6 +96,7 @@ class AlgoWrapper:
         model_based_list = [
             'MBPPOLag',
             'SafeLoop',
+            'CAP',
         ]
         assert (
             self.algo in on_policy_list + off_policy_list + model_based_list
@@ -123,10 +124,10 @@ class AlgoWrapper:
         if algo_flag != 3:
             self.evaluator = Evaluator(self.env, ac.pi, ac.obs_oms)
 
-    def evaluate(self, num_episodes: int = 10, horizon: int = 1000, cost_criteria: float = 1.0):
+    def evaluate(self, num_episodes: int = 10, horizon: int = 1000, cost_gamma: float = 1.0):
         """Agent Evaluation"""
         assert self.evaluator is not None, 'Please run learn() first!'
-        self.evaluator.evaluate(num_episodes, horizon, cost_criteria)
+        self.evaluator.evaluate(num_episodes, horizon, cost_gamma)
 
     def render(
         self,

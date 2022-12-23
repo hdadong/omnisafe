@@ -53,26 +53,26 @@ class EnvWrapper:  # pylint: disable=too-many-instance-attributes
         self.timestep = 0
         self.num_steps = 1000
         self.goal_distance = 0
-        if self.algo in ['MBPPOLag', 'SafeLoop']:
-            assert env_id in [
-                'SafetyPointGoal3-v0',
-                'SafetyCarGoal3-v0',
-                'SafetyPointGoal1-v0',
-                'SafetyCarGoal1-v0',
-            ]
-            self.robot = 'Point' if 'Point' in env_id else 'Car'
-            self.task = 'Goal'
-
-        mujoco_pools = [
-            'Ant-v3',
+        self.modelbased_safetygym = [
+            'SafetyPointGoal3-v0',
+            'SafetyCarGoal3-v0',
+            'SafetyPointGoal1-v0',
+            'SafetyCarGoal1-v0',
+        ]
+        self.modelbased_mujoco_speed = [
+            'Ant-v4',
             'Swimmer-v3',
             'HalfCheetah-v3',
+            'HalfCheetah-v4',
             'Hopper-v3',
             'Humanoid-v3',
             'Walker2d-v3',
         ]
-        self.env_type = 'mujoco' if self.env_id in mujoco_pools else 'gym'
-        if self.env_type == 'gym':
+        assert env_id in self.modelbased_safetygym + self.modelbased_mujoco_speed, f'not support {env_id}'
+        if env_id in self.modelbased_safetygym:
+            self.robot = 'Point' if 'Point' in env_id else 'Car'
+            self.task = 'Goal'
+            self.env_type =  'gym'
             self.robot = self.robot.capitalize()  # mujoco  not use this attribute
             self.task = self.task.capitalize()  # mujoco  not use this attribute
             assert self.robot in ROBOTS, f'can not recognize the robot type {self.robot}'
@@ -80,16 +80,18 @@ class EnvWrapper:  # pylint: disable=too-many-instance-attributes
             self.env = safety_gymnasium.make(env_id, render_mode=render_mode)
             self.init_sensor()
             self.observation_space = gymnasium.spaces.Box(
-                -np.inf, np.inf, (self.obs_flat_size,), dtype=np.float32
+                -np.inf, np.inf, (self.ac_state_size,), dtype=np.float32
             )
             self.action_space = gymnasium.spaces.Box(
                 -1, 1, (self.env.action_space.shape[0],), dtype=np.float32
             )
-
-        else:  # mujoco
-            self.env = safety_gymnasium.make(env_id, render_mode=render_mode)
+        elif env_id in self.modelbased_mujoco_speed:
+            self.env_type = 'mujoco-speed' 
+            self.env = gymnasium.make(env_id)
             self.observation_space = self.env.observation_space
             self.action_space = self.env.action_space
+            self.dynamics_state_size = self.observation_space.shape[0]
+            self.ac_state_size = self.observation_space.shape[0]
 
     def set_eplen(self, eplen):
         """Set episode length"""
@@ -140,16 +142,19 @@ class EnvWrapper:  # pylint: disable=too-many-instance-attributes
         if self.algo == 'MBPPOLag':
             self.dynamics_state_size = obs_flat.shape[0]  # 42
             self.ac_state_size = np.array(self.generate_lidar(obs_flat)).shape[0]  # 26
+
         elif self.algo == 'SafeLoop':
             self.dynamics_state_size = obs_flat.shape[0]  # 42
             self.ac_state_size = obs_flat.shape[0]  # 42
 
     def reset(self, seed=0):
         """Reset Environment"""
-        if self.env_type == 'mujoco':
-            obs = self.env.reset(seed)
-            return obs
         self.timestep = 0  # Reset internal timer
+
+        if self.env_type == 'mujoco-speed':
+            obs,_ = self.env.reset()
+            return obs
+        
         self.env.reset()
         obs = self.get_obs_flatten()
         if self.algo == 'MBPPOLag':
@@ -169,24 +174,43 @@ class EnvWrapper:  # pylint: disable=too-many-instance-attributes
         reward = 0
         cost = 0
         step_num = 0
-        for _ in range(num_repeat):
-            control = action
-            _, reward_k, cost_k, terminated, truncated, info = self.env.step(control)
-            terminated = False  # not used now
-            step_num += 1
-            reward += reward_k
-            cost += cost_k
-            self.timestep += 1  # Increment internal timer
-            if self.timestep >= self.num_steps:
-                truncated = True
-            observation = self.get_obs_flatten()
-            goal_met = 'goal_met' in info.keys()  # reach the goal
-            if terminated or truncated or goal_met:
-                # the action is not related to next state, so break
-                break
-        if self.algo in ['MBPPOLag', 'SafeLoop']:
-            info = {'cost': cost, 'goal_met': goal_met, 'step_num': step_num}
-
+        if self.env_type == 'gym':
+            for _ in range(num_repeat):
+                control = action
+                _, reward_k, cost_k, terminated, truncated, info = self.env.step(control)
+                terminated = False  # not used now
+                step_num += 1
+                reward += reward_k
+                cost += cost_k
+                self.timestep += 1  # Increment internal timer
+                if self.timestep >= self.num_steps:
+                    truncated = True
+                observation = self.get_obs_flatten()
+                goal_met = 'goal_met' in info.keys()  # reach the goal
+                if terminated or truncated or goal_met:
+                    # the action is not related to next state, so break
+                    break
+            if self.algo in ['MBPPOLag', 'SafeLoop']:
+                info = {'cost': cost, 'goal_met': goal_met, 'step_num': step_num}
+        elif self.env_type == 'mujoco-speed':
+            for _ in range(num_repeat):
+                control = action
+                state_k, reward_k, terminated, truncated, info = self.env.step(control)
+                step_num += 1
+                reward += reward_k
+                if 'y_velocity' not in info:
+                    cost_k = np.abs(info['x_velocity'])
+                else:
+                    cost_k = np.sqrt(info['x_velocity'] ** 2 + info['y_velocity'] ** 2)
+                cost += cost_k
+                self.timestep += 1  # Increment internal timer
+                if self.timestep >= self.num_steps:
+                    truncated = True
+                if terminated or truncated:
+                    # the action is not related to next state, so break
+                    break
+            info = {'cost': cost, 'goal_met': False, 'step_num': step_num}
+            observation = state_k
         return observation, reward, cost, terminated, truncated, info
 
     def render(self):

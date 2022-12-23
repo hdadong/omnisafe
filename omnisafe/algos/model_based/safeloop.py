@@ -52,7 +52,14 @@ class SafeLoop(PolicyGradientModelBased, Planner):  # pylint: disable=too-many-i
             self.alpha = self.log_alpha.exp()
         else:
             self.alpha = self.cfgs['alpha_init']
-
+        # Set up model saving
+        what_to_save = {
+            'pi': self.actor_critic.pi,
+            'dynamics': self.dynamics,
+        }
+        self.logger.setup_torch_saver(what_to_save=what_to_save)
+        self.logger.torch_save()
+        
     def set_algorithm_specific_actor_critic(self):
         """Initialize Soft Actor-Critic"""
         self.actor_critic = SoftActorCritic(
@@ -71,7 +78,6 @@ class SafeLoop(PolicyGradientModelBased, Planner):  # pylint: disable=too-many-i
         # Set up optimizer for policy and q-function
         self.pi_optimizer = Adam(self.actor_critic.pi.parameters(), lr=self.cfgs['sac_lr'])
         self.q_optimizer = Adam(self.q_params, lr=self.cfgs['sac_lr'])
-        self.v_optimizer = Adam(self.actor_critic.v.parameters(), lr=self.cfgs['sac_lr'])
         return self.actor_critic
 
     def algorithm_specific_logs(self, time_step):
@@ -81,21 +87,25 @@ class SafeLoop(PolicyGradientModelBased, Planner):  # pylint: disable=too-many-i
             self.logger.log_tabular('Loss/Pi')
             self.logger.log_tabular('Loss/alpha')
             self.logger.log_tabular('Loss/Q-networks')
-            self.logger.log_tabular('Loss/DynamicsTrainLoss')
-            self.logger.log_tabular('Loss/DynamicsValLoss')
+            self.logger.log_tabular('Loss/DynamicsTrainMseLoss')
+            self.logger.log_tabular('Loss/DynamicsValMseLoss')
+            self.logger.log_tabular('Plan/safety_costs_mean')
+
         else:
             self.logger.store(
                 **{
                     'Loss/Pi': 0,
                     'Loss/alpha': 0,
                     'Loss/Q-networks': 0,
+                    'Plan/safety_costs_mean':0,
                 }
             )
             self.logger.log_tabular('Loss/Pi')
             self.logger.log_tabular('Loss/alpha')
             self.logger.log_tabular('Loss/Q-networks')
-            self.logger.log_tabular('Loss/DynamicsTrainLoss')
-            self.logger.log_tabular('Loss/DynamicsValLoss')
+            self.logger.log_tabular('Loss/DynamicsTrainMseLoss')
+            self.logger.log_tabular('Loss/DynamicsValMseLoss')
+            self.logger.log_tabular('Plan/safety_costs_mean')
 
     def update_actor_critic(self, time_step):
         """update actor and critic"""
@@ -224,24 +234,33 @@ class SafeLoop(PolicyGradientModelBased, Planner):  # pylint: disable=too-many-i
         state = self.off_replay_buffer.obs_buf[: self.off_replay_buffer.size, :]
         action = self.off_replay_buffer.act_buf[: self.off_replay_buffer.size, :]
         reward = self.off_replay_buffer.rew_buf[: self.off_replay_buffer.size]
+        cost = self.off_replay_buffer.cost_buf[: self.off_replay_buffer.size]
         next_state = self.off_replay_buffer.obs2_buf[: self.off_replay_buffer.size, :]
         delta_state = next_state - state
         inputs = np.concatenate((state, action), axis=-1)
-        labels = np.concatenate((np.reshape(reward, (reward.shape[0], -1)), delta_state), axis=-1)
-        trainloss, valloss = self.dynamics.train(inputs, labels, batch_size=256, holdout_ratio=0.2)
+        if self.env.env_type == 'mujoco-speed':
+            labels = np.concatenate((np.reshape(reward, (reward.shape[0], -1)),np.reshape(cost, (cost.shape[0], -1)) , delta_state), axis=-1)
+        elif self.env.env_type == 'gym':
+            labels = np.concatenate((np.reshape(reward, (reward.shape[0], -1)), delta_state), axis=-1)
+        train_mse_losses, val_mse_losses = self.dynamics.train(inputs, labels, batch_size=256, holdout_ratio=0.2)
         self.logger.store(
             **{
-                'Loss/DynamicsTrainLoss': trainloss,
-                'Loss/DynamicsValLoss': valloss,
+                'Loss/DynamicsTrainMseLoss': train_mse_losses,
+                'Loss/DynamicsValMseLoss': val_mse_losses,
             }
         )
-
     def select_action(self, time_step, state, env):
         """action selection"""
         if time_step < self.cfgs['update_policy_start_timesteps']:
             action = self.env.action_space.sample()
+
         else:
-            action = self.get_action(np.array(state), env=env)
+            action, safety_costs_mean = self.get_action(np.array(state))
+            self.logger.store(
+                **{
+                    'Plan/safety_costs_mean': safety_costs_mean,
+                }
+            )
             action = action + np.random.normal(action.shape) * self.cfgs['exploration_noise']
         action = np.clip(action, env.action_space.low, env.action_space.high)
         return action, None
@@ -269,4 +288,5 @@ class SafeLoop(PolicyGradientModelBased, Planner):  # pylint: disable=too-many-i
 
     def algo_reset(self):
         """reset planner"""
-        self.planner_reset()
+        if self.env.env_type == 'gym':
+            self.planner_reset()

@@ -24,6 +24,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+def Swish(x):
+    """Transform data using sigmoid function."""
+    return x * torch.sigmoid(x)
+
 
 class StandardScaler:
     """Normalize data"""
@@ -136,6 +140,7 @@ class EnsembleModel(nn.Module):
     def __init__(
         self,
         algo,
+        env_type,
         state_size,
         action_size,
         reward_size,
@@ -147,10 +152,18 @@ class EnsembleModel(nn.Module):
     ):
         super(EnsembleModel, self).__init__()
         self.algo = algo
+        self.env_type = env_type
+
+        self.state_size = state_size
+        self.reward_size = reward_size
+        self.cost_size = cost_size
         if self.algo == 'mbppo-lag':
             self.output_dim = state_size
         elif self.algo == 'safe-loop':
             self.output_dim = state_size + reward_size
+        elif self.algo == 'cap'and self.env_type == 'mujoco-speed':
+            self.output_dim = state_size + reward_size + cost_size
+        
         self.hidden_size = hidden_size
         self.use_decay = use_decay
 
@@ -160,32 +173,52 @@ class EnsembleModel(nn.Module):
         self.nn2 = EnsembleFC(hidden_size, hidden_size, ensemble_size, weight_decay=0.00005)
         self.nn3 = EnsembleFC(hidden_size, hidden_size, ensemble_size, weight_decay=0.000075)
         self.nn4 = EnsembleFC(hidden_size, hidden_size, ensemble_size, weight_decay=0.000075)
-        if self.algo in ['mbppo-lag', 'safe-loop']:
-            self.nn5 = EnsembleFC(
-                hidden_size, self.output_dim * 2, ensemble_size, weight_decay=0.0001
-            )
+        self.nn5 = EnsembleFC(
+            hidden_size, self.output_dim * 2, ensemble_size, weight_decay=0.0001
+        )
 
         self.register_buffer('max_logvar', (torch.ones((1, self.output_dim)).float() / 2))
         self.register_buffer('min_logvar', (-torch.ones((1, self.output_dim)).float() * 10))
         self.optimizer = torch.optim.Adam(self.parameters(), lr=learning_rate)
         self.apply(init_weights)
-        self.swish = Swish()
+        #self.swish = Swish()
 
-    def forward(self, data, ret_log_var=False):
-        nn1_output = self.swish(self.nn1(data))
-        nn2_output = self.swish(self.nn2(nn1_output))
-        nn3_output = self.swish(self.nn3(nn2_output))
-        nn4_output = self.swish(self.nn4(nn3_output))
-        nn5_output = self.nn5(nn4_output)
+    def forward(self, data, ret_log_var=False, training=True):
+        nn1_output = Swish(self.nn1(data))
+        nn2_output = Swish(self.nn2(nn1_output))
+        nn3_output = Swish(self.nn3(nn2_output))
+        nn4_output = Swish(self.nn4(nn3_output))
+        if self.algo == 'cap':
+            nn5_output = self.nn5(nn4_output)
+            mean = nn5_output[:, :, : self.output_dim]
+            logvar = self.max_logvar - F.softplus(self.max_logvar - nn5_output[:, :, self.output_dim :])
+            logvar = self.min_logvar + F.softplus(logvar - self.min_logvar)
+            var = torch.exp(logvar)
+            if training:
+                if ret_log_var:
+                    return mean, logvar
+                return mean, var
+            else:
+                state_noise = torch.randn_like(mean[:,:,2:], device=mean.device) * var[:,:,2:].sqrt()
+                reward_noise = torch.randn_like(mean[:,:,0], device=mean.device).unsqueeze(2) * (var[:,:,0].sqrt().unsqueeze(2))
+                cost_noise = torch.randn_like(mean[:,:,1], device=mean.device).unsqueeze(2) * (var[:,:,1].sqrt().unsqueeze(2))
+                output = {
+                    "state": (mean[:,:,2:] + state_noise * var[:,:,2:].sqrt(), var[:,:,2:]),
+                    "reward":  (mean[:,:,0].unsqueeze(2) + reward_noise * var[:,:,0].sqrt().unsqueeze(2), var[:,:,0]),
+                    "cost": (mean[:,:,1].unsqueeze(2) + cost_noise * var[:,:,1].sqrt().unsqueeze(2), var[:,:,1]),
+                }
+                return output
+        else:
+            nn5_output = self.nn5(nn4_output)
 
-        mean = nn5_output[:, :, : self.output_dim]
+            mean = nn5_output[:, :, : self.output_dim]
 
-        logvar = self.max_logvar - F.softplus(self.max_logvar - nn5_output[:, :, self.output_dim :])
-        logvar = self.min_logvar + F.softplus(logvar - self.min_logvar)
+            logvar = self.max_logvar - F.softplus(self.max_logvar - nn5_output[:, :, self.output_dim :])
+            logvar = self.min_logvar + F.softplus(logvar - self.min_logvar)
 
-        if ret_log_var:
-            return mean, logvar
-        return mean, torch.exp(logvar)
+            if ret_log_var:
+                return mean, logvar
+            return mean, torch.exp(logvar)
 
     def get_decay_loss(self):
         """Get decay loss"""
@@ -225,6 +258,7 @@ class EnsembleDynamicsModel:
     def __init__(
         self,
         algo,
+        env_type,
         device,
         network_size,
         elite_size,
@@ -232,8 +266,8 @@ class EnsembleDynamicsModel:
         use_decay,
         state_size,
         action_size,
-        reward_size=0,
-        cost_size=0,
+        reward_size,
+        cost_size,
     ):
         self.algo = algo
         self.network_size = network_size
@@ -248,11 +282,12 @@ class EnsembleDynamicsModel:
         if self.algo == 'mbppo-lag':
             self.elite_model_idxes = []
 
-        elif self.algo == 'safe-loop':
+        elif self.algo in ['safe-loop','cap']:
             self.elite_model_idxes = [0, 1, 2, 3, 4]
-
+        self.env_type = env_type
         self.ensemble_model = EnsembleModel(
             algo,
+            env_type,
             state_size,
             action_size,
             reward_size,
@@ -265,6 +300,7 @@ class EnsembleDynamicsModel:
         self.scaler = StandardScaler(self.device)
 
     def train(self, inputs, labels, batch_size=256, holdout_ratio=0.0, max_epochs_since_update=5):
+        """train dynamics, holdout_ratio is the data ratio holded out for validation"""
         self._max_epochs_since_update = max_epochs_since_update
         self._epochs_since_update = 0
         self._state = {}
@@ -277,87 +313,63 @@ class EnsembleDynamicsModel:
         # split training and testing dataset
         train_inputs, train_labels = inputs[num_holdout:], labels[num_holdout:]
         holdout_inputs, holdout_labels = inputs[:num_holdout], labels[:num_holdout]
-
+        print(train_inputs.shape)
         self.scaler.fit(train_inputs)
         train_inputs = self.scaler.transform(train_inputs)
         holdout_inputs = self.scaler.transform(holdout_inputs)
-        if self.algo == 'safe-loop':
-            holdout_inputs = torch.from_numpy(holdout_inputs).float().to(self.device)
-            holdout_labels = torch.from_numpy(holdout_labels).float().to(self.device)
-            holdout_inputs = holdout_inputs[None, :, :].repeat([self.network_size, 1, 1])
-            holdout_labels = holdout_labels[None, :, :].repeat([self.network_size, 1, 1])
 
         for epoch in itertools.count():
+            train_mse_losses = []
             # training
             train_idx = np.vstack(
                 [np.random.permutation(train_inputs.shape[0]) for _ in range(self.network_size)]
             )
             # shape: [train_inputs.shape[0],network_size]
 
-            losses = []
             for start_pos in range(0, train_inputs.shape[0], batch_size):
                 idx = train_idx[:, start_pos : start_pos + batch_size]
                 train_input = torch.from_numpy(train_inputs[idx]).float().to(self.device)
                 train_label = torch.from_numpy(train_labels[idx]).float().to(self.device)
                 mean, logvar = self.ensemble_model(train_input, ret_log_var=True)
-                loss, mtrain = self.ensemble_model.loss(mean, logvar, train_label)
-                self.ensemble_model.train(loss)
-                if self.algo == 'mbppo-lag':
-                    losses.append(mtrain)
-                elif self.algo == 'safe-loop':
-                    losses.append(loss)
-            if self.algo == 'mbppo-lag':
-                # validation
-                val_idx = np.vstack(
-                    [
-                        np.random.permutation(holdout_inputs.shape[0])
-                        for _ in range(self.network_size)
-                    ]
-                )
-                val_batch_size = 512
-                val_losses_list = []
-                len_valid = 0
-                for start_pos in range(0, holdout_inputs.shape[0], val_batch_size):
-                    with torch.no_grad():
-                        idx = val_idx[:, start_pos : start_pos + val_batch_size]
-                        val_input = torch.from_numpy(holdout_inputs[idx]).float().to(self.device)
-                        val_label = torch.from_numpy(holdout_labels[idx]).float().to(self.device)
-                        holdout_mean, holdout_logvar = self.ensemble_model(
-                            val_input, ret_log_var=True
-                        )
-                        _, holdout_mse_losses = self.ensemble_model.loss(
-                            holdout_mean, holdout_logvar, val_label, inc_var_loss=False
-                        )
-                        holdout_mse_losses = holdout_mse_losses.detach().cpu().numpy()
-                        val_losses_list.append(holdout_mse_losses)
-                    len_valid += 1
-                val_losses = np.array(val_losses_list)
-                val_losses = np.sum(val_losses, axis=0) / len_valid
-                sorted_loss_idx = np.argsort(val_losses)
-                self.elite_model_idxes = sorted_loss_idx[: self.elite_size].tolist()
-                break_train = self._save_best(epoch, val_losses)
-                if break_train:
-                    break
-                train_mse_losses = []
-                for i in losses:
-                    train_mse_losses.append(i.detach().cpu().numpy())
+                total_loss, mse_loss = self.ensemble_model.loss(mean, logvar, train_label)
+                self.ensemble_model.train(total_loss)
+                train_mse_losses.append(mse_loss.detach().cpu().numpy().mean())
 
-            elif self.algo == 'safe-loop':
+            # validation
+            val_idx = np.vstack(
+                [
+                    np.random.permutation(holdout_inputs.shape[0])
+                    for _ in range(self.network_size)
+                ]
+            )
+            val_batch_size = 512
+            val_losses_list = []
+            len_valid = 0
+            for start_pos in range(0, holdout_inputs.shape[0], val_batch_size):
                 with torch.no_grad():
+                    idx = val_idx[:, start_pos : start_pos + val_batch_size]
+                    val_input = torch.from_numpy(holdout_inputs[idx]).float().to(self.device)
+                    val_label = torch.from_numpy(holdout_labels[idx]).float().to(self.device)
                     holdout_mean, holdout_logvar = self.ensemble_model(
-                        holdout_inputs, ret_log_var=True
+                        val_input, ret_log_var=True
                     )
                     _, holdout_mse_losses = self.ensemble_model.loss(
-                        holdout_mean, holdout_logvar, holdout_labels, inc_var_loss=False
+                        holdout_mean, holdout_logvar, val_label, inc_var_loss=False
                     )
                     holdout_mse_losses = holdout_mse_losses.detach().cpu().numpy()
-                    sorted_loss_idx = np.argsort(holdout_mse_losses)
-                    self.elite_model_idxes = sorted_loss_idx[: self.elite_size].tolist()
-                    break_train = self._save_best(epoch, holdout_mse_losses)
-                    if break_train:
-                        break
-        if self.algo == 'safe-loop':
-            return 0, holdout_mse_losses.mean()
+                    val_losses_list.append(holdout_mse_losses)
+                len_valid += 1
+            val_losses = np.array(val_losses_list)
+            val_losses = np.sum(val_losses, axis=0) / len_valid
+            sorted_loss_idx = np.argsort(val_losses)
+            self.elite_model_idxes = sorted_loss_idx[: self.elite_size].tolist()
+            break_train = self._save_best(epoch, val_losses)
+            if break_train:
+                break
+        
+        train_mse_losses = np.array(train_mse_losses).mean()
+        val_mse_losses = val_losses
+        return train_mse_losses, val_mse_losses
 
     def _save_best(self, epoch, holdout_losses):
         updated = False
@@ -375,38 +387,21 @@ class EnsembleDynamicsModel:
             self._epochs_since_update += 1
         return self._epochs_since_update > self._max_epochs_since_update
 
-    def predict_batch_t(self, inputs, batch_size=1024, factored=True):
-        """predict batch next state"""
+    def predict_t(self, inputs, batch_size=1024, factored=True, repeat_network=False):
+        """Input type and output type both are tensor, used for plannning loop"""
         inputs = self.scaler.transform(inputs)
-
+        # input shape: [networ_size, (num_gaus+num_actor)*paritcle ,state_dim + action_dim]
         ensemble_mean, ensemble_var = [], []
         for i in range(0, inputs.shape[0], batch_size):
             model_input = inputs[i : min(i + batch_size, inputs.shape[0])].float().to(self.device)
+            # input shape: [networ_size, (num_gaus+num_actor)*paritcle ,state_dim + action_dim]
+            if repeat_network:
+                b_mean, b_var = self.ensemble_model(
+                    model_input[None, :, :].repeat([self.network_size, 1, 1]), ret_log_var=False
+                )
+            else:
+                b_mean, b_var = self.ensemble_model(model_input, ret_log_var=False)
 
-            b_mean, b_var = self.ensemble_model(model_input, ret_log_var=False)
-            ensemble_mean.append(b_mean)
-            ensemble_var.append(b_var)
-        ensemble_mean = torch.cat(ensemble_mean, dim=1)
-        ensemble_var = torch.cat(ensemble_var, dim=1)
-
-        if factored:
-            return ensemble_mean, ensemble_var
-
-        assert False, 'Need to transform to numpy'
-        mean = torch.mean(ensemble_mean, dim=0)
-        var = torch.mean(ensemble_var, dim=0) + torch.mean(
-            torch.square(ensemble_mean - mean[None, :, :]), dim=0
-        )
-        return mean, var
-
-    def predict_t(self, inputs, batch_size=1024, factored=True):
-        inputs = self.scaler.transform(inputs)
-        ensemble_mean, ensemble_var = [], []
-        for i in range(0, inputs.shape[0], batch_size):
-            model_input = inputs[i : min(i + batch_size, inputs.shape[0])].float().to(self.device)
-            b_mean, b_var = self.ensemble_model(
-                model_input[None, :, :].repeat([self.network_size, 1, 1]), ret_log_var=False
-            )
             ensemble_mean.append(b_mean)
             ensemble_var.append(b_var)
         ensemble_mean = torch.cat(ensemble_mean, dim=1)
@@ -423,6 +418,7 @@ class EnsembleDynamicsModel:
         return mean, var
 
     def predict(self, inputs, batch_size=1024, factored=True):
+        """Input type and output type both are numpy"""
         inputs = self.scaler.transform(inputs)
         ensemble_mean, ensemble_var = [], []
         for i in range(0, inputs.shape[0], batch_size):
@@ -448,14 +444,14 @@ class EnsembleDynamicsModel:
         )
         return mean, var
 
-
-class Swish(nn.Module):
-    """Transform data using sigmoid function."""
-
-    def __init__(self):
-        super(Swish, self).__init__()
-
-    def forward(self, input_data):
-        """sigmoid function"""
-        output = input_data * F.sigmoid(input_data)
+    def predic_cap(self, state, action, variance=False):
+        inputs = torch.cat([state, action], dim=-1).to(self.device)
+        inputs = self.scaler.transform(inputs)
+        with torch.no_grad():
+            output = self.ensemble_model(inputs, ret_log_var=True, training=False)
+            output["state"] = (output["state"][0] + state, output["state"][1])
         return output
+
+
+
+

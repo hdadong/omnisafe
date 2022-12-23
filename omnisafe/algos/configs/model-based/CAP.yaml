@@ -17,26 +17,19 @@ defaults:
   # Basic Configurations
   max_real_time_steps: 1000000
   max_ep_len: 1000
-  action_repeat: 5
+  action_repeat: 1
   seed: 0
   device: "cpu"
-  cost_gamma: 1.0
+  cost_gamma: 0.99
+  gamma: 0.99
 
   # Soft Actor-Critic
-  update_policy_start_timesteps: 50000
-  update_policy_freq: 250
-  update_policy_iters: 50
-  ac_hidden_sizes: [64, 64]
-  sac_lr: 0.001
-  alpha_init: 0.2
-  automatic_alpha_tuning: True
-  gamma: 0.99
-  polyak: 0.995
-  use_bc_loss: False
-  sac_config_evaluation_mode: None
+  update_policy_start_timesteps: 0
+  update_policy_freq: 1000
+  update_policy_iters: 0
 
   # log
-  log_freq: 20000
+  log_freq: 1000
   data_dir: "./runs"
 
   # Optional Configuration
@@ -52,22 +45,28 @@ defaults:
   batch_size: 256
 
   # Configuration For dynamics model
-  update_dynamics_freq: 1250
+  update_dynamics_freq: 1000
   dynamics_cfgs:
-    network_size: 7
-    elite_size: 5
+    network_size: 1
+    elite_size: 1
     hidden_size: 200
     use_decay: True
 
   # Configuration For MPC controller
   mpc_config:
-    horizon: 8
-    popsize: 100
-    particles: 4
-    max_iters: 8
+    horizon: 30
+    popsize: 500
+    particles: 20
+    max_iters: 5
     alpha: 0.1
-    mixture_coefficient: 0.05
-    kappa: 1
-    safety_threshold: 0.2
-    minimal_elites: 10
+    mixture_coefficient: 0.0
+    minimal_elites: 50
     obs_clip: 1000
+
+  # Configuration For lagrange
+  lagrange_cfgs:
+    cost_limit: 152.0
+    lagrangian_multiplier_init: 1.0
+    lambda_lr: 0.1
+    lambda_optimizer: "Adam"
+    beta: 0.02
