@@ -93,6 +93,11 @@ class OffPolicyBuffer(BaseBuffer):
         return self._max_size
 
     @property
+    def size(self) -> int:
+        """Return the current size of the buffer."""
+        return self._size
+
+    @property
     def batch_size(self) -> int:
         """Return the batch size of the buffer."""
         return self._batch_size

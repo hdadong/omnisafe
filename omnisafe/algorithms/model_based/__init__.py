@@ -12,8 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Environment api for omnisafe."""
+"""Model-Based algorithms."""
 
-from omnisafe.envs.core import CMDP, env_register, make, support_envs
-from omnisafe.envs.safety_gymnasium_env import SafetyGymnasiumEnv
-from omnisafe.envs.mujoco_env import MujocoEnv
+from omnisafe.algorithms.model_based import (
+    base,
+    planner,
+    models,
+)
+from omnisafe.algorithms.model_based.base import PETS
+from omnisafe.algorithms.model_based.planner import CEMPlanner
+
+
+__all__ = [
+    *base.__all__,
+]

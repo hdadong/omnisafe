@@ -1,4 +1,4 @@
-# Copyright 2022-2023 OmniSafe Team. All Rights Reserved.
+# Copyright 2022 OmniSafe Team. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Environment api for omnisafe."""
+"""The model-based dynamics model."""
 
-from omnisafe.envs.core import CMDP, env_register, make, support_envs
-from omnisafe.envs.safety_gymnasium_env import SafetyGymnasiumEnv
-from omnisafe.envs.mujoco_env import MujocoEnv
+from omnisafe.algorithms.model_based.models.ensemble_model.ensemble import EnsembleDynamicsModel
+
+__all__ = [
+    'EnsembleDynamicsModel',
+]
