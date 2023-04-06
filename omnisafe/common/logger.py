@@ -157,6 +157,10 @@ class Logger:  # pylint: disable=too-many-instance-attributes
             ), 'epochs must be specified in the config file when verbose is False'
             self._proc_bar = tqdm.tqdm(total=self._config['epochs'], desc='Epochs')
 
+    @property
+    def log_dir(self):
+        return self._log_dir
+
     def log(self, msg: str, color: str = 'green', bold: bool = False) -> None:
         """Log the message to the console and the file.
 
