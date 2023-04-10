@@ -423,7 +423,7 @@ class ActionScale(Wrapper):
         action = self._old_min_action + (self._old_max_action - self._old_min_action) * (
             action - self._min_action
         ) / (self._max_action - self._min_action)
-        return super().step(action.cpu().numpy())
+        return super().step(action)
 
 class ActionRepeat(Wrapper):
     """Repeat ab action given times.
@@ -435,7 +435,8 @@ class ActionRepeat(Wrapper):
     def __init__(
         self,
         env: CMDP,
-        times: int
+        times: int,
+        device: torch.device,
     ) -> None:
         """Initialize the wrapper.
 
@@ -444,12 +445,12 @@ class ActionRepeat(Wrapper):
             low: The lower bound of the action space.
             high: The upper bound of the action space.
         """
-        super().__init__(env)
+        super().__init__(env=env, device=device)
         self._times = times
 
     def step(
         self, action: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
         step = 0
         rewards, costs = 0.0, 0.0
         for _ in range(self._times):

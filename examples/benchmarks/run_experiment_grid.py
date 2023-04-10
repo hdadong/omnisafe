@@ -71,25 +71,26 @@ if __name__ == '__main__':
     eg = ExperimentGrid(exp_name='Safety_Gymnasium_Goal')
 
     # Set the algorithms.
-    base_policy = ['PolicyGradient', 'NaturalPG', 'TRPO', 'PPO']
-    naive_lagrange_policy = ['PPOLag', 'TRPOLag', 'RCPO', 'OnCRPO', 'PDO']
-    first_order_policy = ['CUP', 'FOCOPS', 'P3O']
-    second_order_policy = ['CPO', 'PCPO']
-
+    # base_policy = ['PolicyGradient', 'NaturalPG', 'TRPO', 'PPO']
+    # naive_lagrange_policy = ['PPOLag', 'TRPOLag', 'RCPO', 'OnCRPO', 'PDO']
+    # first_order_policy = ['CUP', 'FOCOPS', 'P3O']
+    # second_order_policy = ['CPO', 'PCPO']
+    model_base_policy = ['PETS', 'LOOP']
     # Set the environments.
     mujoco_envs = [
-        'SafetyAntVelocity-v1',
-        'SafetyHopperVelocity-v1',
-        'SafetyHumanoidVelocity-v1',
-        'SafetyWalker2dVelocity-v1',
-        'SafetyHalfCheetahVelocity-v1',
-        'SafetySwimmerVelocity-v1',
+        'SafetyAntVelocity-v4',
+        'SafetyHopperVelocity-v4',
+        'SafetyHumanoidVelocity-v4',
+        'SafetyWalker2dVelocity-v4',
+        'SafetyPointGoal1-v0-modelbased',
+        'SafetyCarGoal1-v0-modelbased',
+        'SafetyAntGoal1-v0-modelbased',
     ]
     eg.add('env_id', mujoco_envs)
 
     # Set the device.
     avaliable_gpus = list(range(torch.cuda.device_count()))
-    gpu_id = [0, 1, 2, 3]
+    gpu_id = [5, 6, 7]
     # if you want to use CPU, please set gpu_id = None
     # gpu_id = None
 
@@ -97,12 +98,12 @@ if __name__ == '__main__':
         warnings.warn('The GPU ID is not available, use CPU instead.', stacklevel=1)
         gpu_id = None
 
-    eg.add('algo', base_policy + naive_lagrange_policy + first_order_policy + second_order_policy)
-    eg.add('logger_cfgs:use_wandb', [False])
-    eg.add('train_cfgs:vector_env_nums', [4])
-    eg.add('train_cfgs:torch_threads', [1])
-    eg.add('algo_cfgs:update_cycle', [2048])
-    eg.add('train_cfgs:total_steps', [1024000])
+    eg.add('algo', model_base_policy)
+    eg.add('logger_cfgs:use_wandb', [True])
+    # eg.add('train_cfgs:vector_env_nums', [4])
+    # eg.add('train_cfgs:torch_threads', [1])
+    eg.add('algo_cfgs:plan_horizon', [10, 15, 20, 25])
+    eg.add('train_cfgs:total_steps', [1000000])
     eg.add('seed', [0])
     # total experiment num must can be divided by num_pool
     # meanwhile, users should decide this value according to their machine
