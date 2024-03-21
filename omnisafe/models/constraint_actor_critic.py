@@ -71,4 +71,4 @@ class ConstraintActorCritic(ActorCritic):
                 obs, deterministic=deterministic, need_log_prob=True
             )
 
-        return action.numpy(), value.numpy(), cost_value.numpy(), logp_a.numpy()
+        return action.cpu().numpy(), value.cpu().numpy(), cost_value.cpu().numpy(), logp_a.cpu().numpy()

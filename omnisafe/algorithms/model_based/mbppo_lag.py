@@ -73,27 +73,66 @@ class MBPPOLag(PolicyGradientModelBased, Lagrange):
     def algorithm_specific_logs(self, time_step):
         """log algo parameter"""
         super().algorithm_specific_logs(time_step)
-        self.logger.log_tabular('DynaMetrics/EpRet')
-        self.logger.log_tabular('DynaMetrics/EpLen')
-        self.logger.log_tabular('DynaMetrics/EpCost')
-        self.logger.log_tabular('Loss/DynamicsTrainMseLoss')
-        self.logger.log_tabular('Loss/DynamicsValMseLoss')
-        self.logger.log_tabular('Loss/Pi', std=False)
-        self.logger.log_tabular('Loss/Value')
-        self.logger.log_tabular('Loss/DeltaPi')
-        self.logger.log_tabular('Loss/DeltaValue')
-        self.logger.log_tabular('Loss/CValue')
-        self.logger.log_tabular('Loss/DeltaCValue')
-        self.logger.log_tabular(
-            'Penalty', self.lambda_range_projection(self.lagrangian_multiplier).item()
-        )
-        self.logger.log_tabular('Values/Adv')
-        self.logger.log_tabular('Values/Adv_C')
-        self.logger.log_tabular('Megaiter')
-        self.logger.log_tabular('Entropy')
-        self.logger.log_tabular('KL')
-        self.logger.log_tabular('Misc/StopIter')
-        self.logger.log_tabular('PolicyRatio')
+        if time_step >self.cfgs.update_policy_freq:
+            self.logger.log_tabular('DynaMetrics/EpRet')
+            self.logger.log_tabular('DynaMetrics/EpLen')
+            self.logger.log_tabular('DynaMetrics/EpCost')
+        else:
+            self.logger.store(
+            **{
+            'Loss/Pi': 0,
+            'Plan/safety_costs_mean': 0,
+            'QVals': 0,
+            'Loss/Value': 0,
+            }
+            )
+        if time_step > self.cfgs.update_dynamics_freq:
+
+            self.logger.log_tabular('Loss/DynamicsTrainMseLoss')
+            self.logger.log_tabular('Loss/DynamicsValMseLoss')
+        else:
+            self.logger.store(
+            **{
+            'Loss/DynamicsTrainMseLoss': 0,
+            'Loss/DynamicsValMseLoss': 0,
+            }
+            )
+        if time_step >  self.cfgs.update_policy_freq:
+            self.logger.log_tabular('Loss/Pi', std=False)
+            self.logger.log_tabular('Loss/Value')
+            self.logger.log_tabular('Loss/DeltaPi')
+            self.logger.log_tabular('Loss/DeltaValue')
+            self.logger.log_tabular('Loss/CValue')
+            self.logger.log_tabular('Loss/DeltaCValue')
+            self.logger.log_tabular(
+                'Penalty', self.lambda_range_projection(self.lagrangian_multiplier).item()
+            )
+            self.logger.log_tabular('Values/Adv')
+            self.logger.log_tabular('Values/Adv_C')
+            self.logger.log_tabular('Megaiter')
+            self.logger.log_tabular('Entropy')
+            self.logger.log_tabular('KL')
+            self.logger.log_tabular('Misc/StopIter')
+            self.logger.log_tabular('PolicyRatio')
+        else:
+            self.logger.store(
+            **{
+            'Loss/Pi': 0,
+            'Loss/Value': 0,
+            'Loss/DeltaPi': 0,
+            'Loss/DeltaValue': 0,
+            'Loss/CValue': 0,
+            'Loss/DeltaCValue': 0,
+            'Penalty': 0,
+            'Values/Adv': 0,
+            'Values/Adv_C': 0,
+            'Megaiter': 0,
+            'Entropy': 0,
+            'KL': 0,
+            'Misc/StopIter': 0,
+            'PolicyRatio': 0,
+            }
+            )
 
     def update_actor_critic(self, time_step):  # pylint: disable=unused-argument
         """update actor critic"""

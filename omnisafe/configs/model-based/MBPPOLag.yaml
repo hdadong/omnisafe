@@ -21,11 +21,11 @@ defaults:
   # The environment wrapper type
   wrapper_type: ModelBasedEnvWrapper
   # Number of training time step
-  max_real_time_steps: 1000000
+  max_real_time_steps: 10000000
   # Number of timestep in an episode
   max_ep_len: 1000
   # CUDA or CPU device
-  device: "cpu"
+  device: "cuda:3"
   # Number of repeated action
   action_repeat: 1
   # clip obseravation to [-obs_clip, obs_clip]
@@ -133,7 +133,7 @@ defaults:
   ## ----------------------------------Configuration For Lagrangian multiplier---------------------- ##
   lagrange_cfgs:
     # Tolerance of constraint violation
-    cost_limit: 18.0
+    cost_limit: 5.0
     # Initial value of lagrangian multiplier
     lagrangian_multiplier_init: 0.5
     # Learning rate of lagrangian multiplier

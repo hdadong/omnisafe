@@ -44,10 +44,10 @@ class GaussianAnnealingActor(Actor):
         )
         self.start_std = start_std
         self.end_std = end_std
-        self._std = self.start_std * torch.ones(self.act_dim, dtype=torch.float32)
+        self._std = self.start_std * torch.ones(self.act_dim, dtype=torch.float32, device="cuda:3")
 
-        self.act_min = act_min
-        self.act_max = act_max
+        self.act_min = act_min.to('cuda:3')
+        self.act_max = act_max.to('cuda:3')
 
         if shared is not None:
             action_head = build_mlp_network(

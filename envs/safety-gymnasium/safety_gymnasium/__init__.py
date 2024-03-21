@@ -23,7 +23,7 @@ __all__ = ['register', 'make']
 
 VERSION = 'v0'
 
-ROBOT_NAMES = ('Point', 'Car')
+ROBOT_NAMES = ('Point', 'Car', 'Doggo')
 ROBOT_XMLS = {name: f'xmls/{name.lower()}.xml' for name in ROBOT_NAMES}
 BASE_SENSORS = ['accelerometer', 'velocimeter', 'gyro', 'magnetometer']
 EXTRA_SENSORS = {
